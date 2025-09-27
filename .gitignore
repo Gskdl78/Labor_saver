@@ -42,6 +42,9 @@ yarn-error.log*
 frontend/build/
 frontend/dist/
 
+# Backend (we only use simple_backend.py)
+backend/
+
 # Environment variables
 .env
 .env.local

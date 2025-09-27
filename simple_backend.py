@@ -9,6 +9,10 @@ import json
 import os
 import logging
 import ollama
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+import uuid
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -66,6 +70,222 @@ def load_qa_database():
 # 載入常見問題資料庫
 qa_database = load_qa_database()
 
+# 初始化 ChromaDB 和 Sentence Transformer
+try:
+    # 初始化 ChromaDB
+    chroma_client = chromadb.Client(Settings(
+        persist_directory="./chroma_db",
+        anonymized_telemetry=False
+    ))
+    
+    # 初始化 Sentence Transformer (使用中文模型)
+    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    
+    # 創建或獲取集合
+    collection = chroma_client.get_or_create_collection(
+        name="labor_insurance_knowledge",
+        metadata={"description": "勞工保險知識庫"}
+    )
+    
+    logger.info("ChromaDB 和 Sentence Transformer 初始化成功")
+except Exception as e:
+    logger.error(f"初始化 ChromaDB 失敗: {e}")
+    chroma_client = None
+    embedding_model = None
+    collection = None
+
+# 載入所有勞保資料集到向量數據庫
+def load_all_datasets_to_vector_db():
+    """載入所有勞保資料集到向量數據庫"""
+    if not collection or not embedding_model:
+        logger.warning("ChromaDB 或 embedding_model 未初始化，跳過向量數據庫載入")
+        return False
+    
+    try:
+        # 檢查是否已經有數據
+        existing_count = collection.count()
+        if existing_count > 0:
+            logger.info(f"向量數據庫已有 {existing_count} 條記錄，跳過重新載入")
+            return True
+        
+        documents = []
+        metadatas = []
+        ids = []
+        
+        # 1. 載入失能給付標準第三條附表
+        try:
+            with open('勞保資料集/勞工保險失能給付標準第三條附表.json', 'r', encoding='utf-8') as f:
+                disability_standards = json.load(f)
+            
+            for item in disability_standards:
+                doc_text = f"""
+失能種類：{item.get('失能種類', '')}
+失能項目：{item.get('失能項目', '')}
+失能狀態：{item.get('失能狀態', '')}
+失能等級：{item.get('失能等級', '')}
+失能審核基準：{item.get('失能審核基準', '')}
+開具診斷書醫療機構層級：{item.get('開具診斷書醫療機構層級', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "勞工保險失能給付標準第三條附表",
+                    "type": "失能給付標準",
+                    "失能等級": item.get('失能等級', ''),
+                    "失能種類": item.get('失能種類', '')
+                })
+                ids.append(f"disability_{item.get('編號', uuid.uuid4())}")
+                
+        except Exception as e:
+            logger.error(f"載入失能給付標準失敗: {e}")
+        
+        # 2. 載入職業傷病審查準則
+        try:
+            with open('勞保資料集/勞工職業災害保險職業傷病審查準則.json', 'r', encoding='utf-8') as f:
+                occupational_rules = json.load(f)
+            
+            for item in occupational_rules:
+                doc_text = f"""
+條號：{item.get('條號', '')}
+內容：{item.get('內容', '')}
+修正發布日期：{item.get('修正發布日期（民國年月日）', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "勞工職業災害保險職業傷病審查準則",
+                    "type": "職業傷病審查",
+                    "條號": item.get('條號', '')
+                })
+                ids.append(f"occupational_{item.get('序號', uuid.uuid4())}")
+                
+        except Exception as e:
+            logger.error(f"載入職業傷病審查準則失敗: {e}")
+        
+        # 3. 載入醫療給付介紹
+        try:
+            with open('勞保資料集/勞工職業災害保險醫療給付介紹.json', 'r', encoding='utf-8') as f:
+                medical_benefits = json.load(f)
+            
+            for item in medical_benefits:
+                doc_text = f"""
+項目：{item.get('項目', '')}
+說明：{item.get('說明', '')}
+法規：{item.get('法規', '')}
+適用起日：{item.get('適用起日（民國年月日）', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "勞工職業災害保險醫療給付介紹",
+                    "type": "醫療給付",
+                    "項目": item.get('項目', '')
+                })
+                ids.append(f"medical_{uuid.uuid4()}")
+                
+        except Exception as e:
+            logger.error(f"載入醫療給付介紹失敗: {e}")
+        
+        # 4. 載入各失能等級之給付標準
+        try:
+            with open('勞保資料集/各失能等級之給付標準.json', 'r', encoding='utf-8') as f:
+                benefit_standards = json.load(f)
+            
+            for item in benefit_standards:
+                doc_text = f"""
+失能等級：{item.get('失能等級', '')}
+普通傷病失能補助費給付標準：{item.get('普通傷病失能補助費給付標準', '')}
+職業傷病失能補償費給付標準：{item.get('職業傷病失能補償費給付標準', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "各失能等級之給付標準",
+                    "type": "給付標準",
+                    "失能等級": item.get('失能等級', '')
+                })
+                ids.append(f"benefit_{item.get('失能等級', uuid.uuid4())}")
+                
+        except Exception as e:
+            logger.error(f"載入給付標準失敗: {e}")
+        
+        # 5. 載入勞保局辦事處資料
+        try:
+            with open('勞保資料集/勞保局各地辦事處.json', 'r', encoding='utf-8') as f:
+                labor_offices = json.load(f)
+            
+            for item in labor_offices:
+                doc_text = f"""
+縣市別：{item.get('縣市別', '')}
+辦事處地址：{item.get('辦事處地址', '')}
+辦事處電話：{item.get('辦事處電話', '')}
+櫃台服務時間：{item.get('櫃台服務時間', '')}
+電話服務時間：{item.get('電話服務時間', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "勞保局各地辦事處",
+                    "type": "辦事處資訊",
+                    "縣市別": item.get('縣市別', '')
+                })
+                ids.append(f"office_{uuid.uuid4()}")
+                
+        except Exception as e:
+            logger.error(f"載入勞保局辦事處失敗: {e}")
+        
+        # 6. 載入醫院名單
+        try:
+            with open('勞保資料集/衛生福利部評鑑合格之醫院名單.json', 'r', encoding='utf-8') as f:
+                hospitals = json.load(f)
+            
+            for item in hospitals:
+                doc_text = f"""
+醫院名稱：{item.get('醫院名稱', '')}
+所在縣市：{item.get('所在縣市', '')}
+醫院評鑑評鑑結果：{item.get('醫院評鑑評鑑結果', '')}
+醫院電話：{item.get('醫院電話', '')}
+地址：{item.get('地址', '')}
+                """.strip()
+                
+                documents.append(doc_text)
+                metadatas.append({
+                    "source": "衛生福利部評鑑合格之醫院名單",
+                    "type": "醫院資訊",
+                    "所在縣市": item.get('所在縣市', ''),
+                    "醫院名稱": item.get('醫院名稱', '')
+                })
+                ids.append(f"hospital_{uuid.uuid4()}")
+                
+        except Exception as e:
+            logger.error(f"載入醫院名單失敗: {e}")
+        
+        # 批量添加到向量數據庫
+        if documents:
+            # 生成嵌入向量
+            embeddings = embedding_model.encode(documents).tolist()
+            
+            # 添加到 ChromaDB
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids,
+                embeddings=embeddings
+            )
+            
+            logger.info(f"成功載入 {len(documents)} 條記錄到向量數據庫")
+            return True
+        else:
+            logger.warning("沒有找到任何文檔來載入")
+            return False
+            
+    except Exception as e:
+        logger.error(f"載入向量數據庫失敗: {e}")
+        return False
+
+# 初始化時載入所有資料集
+load_all_datasets_to_vector_db()
+
 # 初始化 Ollama 客戶端
 ollama_client = ollama.Client(host='http://127.0.0.1:11434')
 
@@ -102,6 +322,38 @@ def find_preset_answer(question: str) -> str:
             return answer
     
     return ""
+
+def search_vector_database(question: str, top_k: int = 3) -> List[dict]:
+    """在向量數據庫中搜索相關文檔"""
+    if not collection or not embedding_model:
+        return []
+    
+    try:
+        # 生成查詢向量
+        query_embedding = embedding_model.encode([question]).tolist()[0]
+        
+        # 搜索相似文檔
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=['documents', 'metadatas', 'distances']
+        )
+        
+        # 格式化結果
+        formatted_results = []
+        if results['documents'] and results['documents'][0]:
+            for i, doc in enumerate(results['documents'][0]):
+                formatted_results.append({
+                    'document': doc,
+                    'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
+                    'distance': results['distances'][0][i] if results['distances'] else 0
+                })
+        
+        return formatted_results
+        
+    except Exception as e:
+        logger.error(f"向量數據庫搜索失敗: {e}")
+        return []
 
 def search_qa_database(question: str) -> str:
     """在JSON資料庫中搜索答案"""
@@ -161,9 +413,70 @@ async def get_preset_questions():
         "total": len(questions)
     }
 
+@app.get("/api/rag/status")
+async def get_rag_status():
+    """獲取RAG系統狀態"""
+    try:
+        if not collection:
+            return {
+                "status": "error",
+                "message": "ChromaDB 未初始化",
+                "vector_db_count": 0
+            }
+        
+        count = collection.count()
+        return {
+            "status": "healthy",
+            "message": "RAG系統運行正常",
+            "vector_db_count": count,
+            "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+            "collections": ["labor_insurance_knowledge"]
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"RAG系統狀態檢查失敗: {str(e)}",
+            "vector_db_count": 0
+        }
+
+@app.post("/api/rag/reload")
+async def reload_vector_database():
+    """重新載入向量數據庫"""
+    try:
+        if not collection:
+            return {
+                "success": False,
+                "message": "ChromaDB 未初始化"
+            }
+        
+        # 清空現有數據
+        collection.delete()
+        
+        # 重新載入
+        success = load_all_datasets_to_vector_db()
+        
+        if success:
+            count = collection.count()
+            return {
+                "success": True,
+                "message": f"成功重新載入 {count} 條記錄",
+                "record_count": count
+            }
+        else:
+            return {
+                "success": False,
+                "message": "重新載入失敗"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"重新載入失敗: {str(e)}"
+        }
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """優化版聊天 API"""
+    """RAG增強版聊天 API"""
     try:
         # 1. 先檢查是否有預設答案
         preset_answer = find_preset_answer(request.message)
@@ -174,32 +487,53 @@ async def chat(request: ChatRequest):
                 success=True
             )
         
-        # 2. 如果沒有預設答案，使用語言模型（限制50字）
-        prompt = f"""你是勞災保險諮詢助手，專門回答勞工保險相關問題。
+        # 2. 使用RAG系統搜索相關文檔
+        relevant_docs = search_vector_database(request.message, top_k=3)
+        
+        # 3. 構建基於文檔的提示詞
+        context_text = ""
+        sources = []
+        
+        if relevant_docs:
+            for doc in relevant_docs:
+                context_text += f"\n相關資訊：\n{doc['document']}\n"
+                source_name = doc['metadata'].get('source', '未知來源')
+                if source_name not in sources:
+                    sources.append(source_name)
+        
+        # 構建完整的提示詞
+        prompt = f"""你是勞災保險諮詢助手，專門回答勞工保險相關問題。請根據以下相關資料回答問題。
 
 問題：{request.message}
 
-請用繁體中文簡潔回答，限制在50字以內，提供準確的資訊："""
+相關資料：
+{context_text}
+
+請根據以上資料用繁體中文回答，提供準確、專業的資訊。如果資料中沒有相關資訊，請說明並建議用戶諮詢相關機構。回答請控制在200字以內："""
 
         # 使用 Ollama 生成回答
         response = ollama_client.generate(
             model="gemma3:4b",
             prompt=prompt,
             options={
-                'temperature': 0.7,
-                'top_p': 0.9,
-                'max_tokens': 100,  # 減少token數，加快響應
+                'temperature': 0.3,  # 降低溫度以提高準確性
+                'top_p': 0.8,
+                'max_tokens': 300,  # 增加token數以支持更詳細的回答
             }
         )
         
-        # 限制回答長度在50字內
         answer = response['response'].strip()
-        if len(answer) > 50:
-            answer = answer[:47] + "..."
+        
+        # 如果沒有找到相關文檔，添加說明
+        if not relevant_docs:
+            answer += "\n\n注意：此問題的相關資料可能不在我們的知識庫中，建議您直接聯繫勞保局或相關機構獲得更準確的資訊。"
+            sources = ["AI 語言模型"]
+        else:
+            sources.append("AI 語言模型")
         
         return ChatResponse(
             response=answer,
-            sources=["AI 語言模型"],
+            sources=sources,
             success=True
         )
         
@@ -385,8 +719,8 @@ def load_map_data():
         with open('勞保資料集/勞保局各地辦事處.json', 'r', encoding='utf-8') as f:
             labor_offices = json.load(f)
         
-        # 載入醫院數據
-        with open('勞保資料集/衛生福利部評鑑合格之醫院名單.json', 'r', encoding='utf-8') as f:
+        # 載入醫院數據（使用含經緯度的版本）
+        with open('勞保資料集/衛生福利部評鑑合格之醫院名單_含經緯度.json', 'r', encoding='utf-8') as f:
             hospitals = json.load(f)
         
         return {
@@ -439,52 +773,70 @@ async def get_nearby_locations(request: dict):
         nearby_locations = []
         
         if location_type == "hospital":
-            # 為醫院生成基於城市的座標
-            city_coordinates = {
-                "基隆市": (25.1276, 121.7395),
-                "台北市": (25.0330, 121.5654),
-                "新北市": (25.0169, 121.4628),
-                "桃園市": (24.9936, 121.3010),
-                "新竹市": (24.8066, 120.9686),
-                "新竹縣": (24.8387, 121.0179),
-                "苗栗縣": (24.5601, 120.8214),
-                "台中市": (24.1477, 120.6736),
-                "南投縣": (23.9605, 120.9718),
-                "彰化縣": (24.0815, 120.5387),
-                "雲林縣": (23.7081, 120.4313),
-                "嘉義市": (23.4801, 120.4491),
-                "嘉義縣": (23.4518, 120.2551),
-                "台南市": (23.1417, 120.2513),
-                "高雄市": (22.6273, 120.3014),
-                "屏東縣": (22.6872, 120.4889),
-                "宜蘭縣": (24.7021, 121.7377),
-                "花蓮縣": (23.9739, 121.6014),
-                "台東縣": (22.7603, 121.1479),
-                "澎湖縣": (23.5711, 119.5794),
-                "金門縣": (24.4327, 118.3171),
-                "連江縣": (26.1608, 119.9492)
+            import math
+            
+            # 計算真實距離（使用Haversine公式）
+            def calculate_distance(lat1, lon1, lat2, lon2):
+                R = 6371  # 地球半徑（公里）
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat/2) * math.sin(dlat/2) + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2) * math.sin(dlon/2)
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                return R * c
+            
+            # 按醫院等級分類
+            hospital_categories = {
+                "醫學中心": [],
+                "區域醫院": [],
+                "地區醫院": [],
+                "診所": []
             }
             
             for hospital in map_data["hospitals"]:
-                city = hospital["所在縣市"]
-                if city in city_coordinates:
-                    base_lat, base_lng = city_coordinates[city]
-                    # 為同一城市的醫院添加小的隨機偏移
-                    import random
-                    random.seed(hash(hospital["醫院名稱"]))  # 使用醫院名稱作為種子，確保每次結果一致
-                    lat_offset = random.uniform(-0.01, 0.01)
-                    lng_offset = random.uniform(-0.01, 0.01)
-                    
-                    nearby_locations.append({
-                        "name": hospital["醫院名稱"],
-                        "address": hospital.get("地址", "地址不詳"),
-                        "city": hospital["所在縣市"],
-                        "type": "hospital",
-                        "phone": hospital.get("醫院電話", ""),
-                        "level": hospital["醫院評鑑評鑑結果"],
-                        "latitude": base_lat + lat_offset,
-                        "longitude": base_lng + lng_offset
-                    })
+                # 使用真實的經緯度
+                hospital_lat = hospital.get("緯度")
+                hospital_lng = hospital.get("經度")
+                
+                if hospital_lat is None or hospital_lng is None:
+                    continue
+                
+                # 計算距離
+                distance_km = calculate_distance(latitude, longitude, hospital_lat, hospital_lng)
+                
+                # 解析醫院等級
+                level_text = hospital["醫院評鑑評鑑結果"]
+                if "醫學中心" in level_text:
+                    category = "醫學中心"
+                elif "區域醫院" in level_text:
+                    category = "區域醫院"
+                elif "地區醫院" in level_text:
+                    category = "地區醫院"
+                else:
+                    category = "診所"
+                
+                # 在醫院名稱後面加上等級標示
+                hospital_name_with_level = f"{hospital['醫院名稱']}({category})"
+                
+                hospital_info = {
+                    "name": hospital_name_with_level,
+                    "original_name": hospital["醫院名稱"],  # 保留原始名稱
+                    "address": hospital.get("地址", "地址不詳"),
+                    "city": hospital["所在縣市"],
+                    "type": "hospital",
+                    "phone": hospital.get("醫院電話", ""),
+                    "level": level_text,
+                    "category": category,
+                    "latitude": hospital_lat,
+                    "longitude": hospital_lng,
+                    "distance": round(distance_km, 2)
+                }
+                
+                hospital_categories[category].append(hospital_info)
+            
+            # 按距離排序每個類別，並取最近的3個
+            for category, hospitals in hospital_categories.items():
+                hospitals.sort(key=lambda x: x["distance"])
+                nearby_locations.extend(hospitals[:3])  # 每類取最近的3個
         elif location_type == "labor_office":
             logger.info(f"處理勞保局辦事處搜索，共有 {len(map_data['labor_offices'])} 個辦事處")
             # 簡化距離計算，直接返回所有勞保局辦事處
@@ -515,9 +867,27 @@ async def get_nearby_locations(request: dict):
         # 按距離排序
         nearby_locations.sort(key=lambda x: x.get("distance", 0))
         
+        # 根據類型限制返回數量
+        if location_type == "hospital":
+            # 醫院按等級分類返回（每類3個，共12個）
+            result_locations = nearby_locations[:12]  # 最多12個（4類×3個）
+            
+            # 統計各類別數量
+            category_counts = {}
+            for location in result_locations:
+                category = location.get("category", "未知")
+                category_counts[category] = category_counts.get(category, 0) + 1
+            
+            result_message = f"找到最近的醫院：醫學中心{category_counts.get('醫學中心', 0)}家、區域醫院{category_counts.get('區域醫院', 0)}家、地區醫院{category_counts.get('地區醫院', 0)}家、診所{category_counts.get('診所', 0)}家"
+        else:
+            # 勞保局辦事處返回前20個
+            result_locations = nearby_locations[:20]
+            result_message = f"找到 {len(result_locations)} 個勞保局辦事處"
+        
         return {
-            "locations": nearby_locations[:20],  # 限制返回數量
+            "locations": result_locations,
             "total": len(nearby_locations),
+            "message": result_message,
             "success": True
         }
         

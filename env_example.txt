@@ -1,0 +1,19 @@
+# 環境變數設定範例
+# 複製此檔案為 .env 並修改相應設定
+
+# API 設定
+API_HOST=localhost
+API_PORT=8000
+
+# Ollama 設定
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=gemma3:4b
+
+# ChromaDB 設定
+CHROMA_DB_PATH=./chroma_db
+
+# 前端設定
+REACT_APP_API_URL=http://localhost:8000/api
+
+# Google Maps API Key (選用)
+# GOOGLE_MAPS_API_KEY=your_api_key_here

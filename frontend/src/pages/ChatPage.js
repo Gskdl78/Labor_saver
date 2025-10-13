@@ -16,7 +16,6 @@ import {
 import {
   Send,
   Person,
-  SmartToy,
   Clear,
 } from '@mui/icons-material';
 import { chatAPI } from '../services/api';
@@ -26,7 +25,7 @@ const ChatPage = () => {
     {
       id: 1,
       type: 'bot',
-      content: '您好！我是智慧勞災保險諮詢助手。我可以幫助您了解勞災保險的相關規定、申請流程和給付標準。請問您有什麼問題嗎？',
+      content: '您好！我是職護喵。我可以幫助您了解勞災保險的相關規定、申請流程和給付標準。請問您有什麼問題嗎？',
       timestamp: new Date(),
     }
   ]);
@@ -58,7 +57,8 @@ const ChatPage = () => {
   useEffect(() => {
     const loadPresetQuestions = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/chat/preset-questions');
+        const apiUrl = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000/api';
+        const response = await fetch(`${apiUrl}/chat/preset-questions`);
         const data = await response.json();
         if (data.questions && data.questions.length > 0) {
           setSuggestedQuestions(data.questions.slice(0, 10)); // 只顯示前10個問題
@@ -171,7 +171,7 @@ const ChatPage = () => {
         textAlign="center"
         sx={{ mb: 4, fontWeight: 600 }}
       >
-        語言模型諮商
+        職護喵
       </Typography>
 
       {error && (
@@ -205,8 +205,11 @@ const ChatPage = () => {
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <SmartToy />
-            <Typography variant="h6">智慧勞災諮詢助手</Typography>
+            <Avatar src="/images/職護喵.png" sx={{ width: 28, height: 28 }}>
+              {/* 後備顯示，以防圖片尚未就緒 */}
+              喵
+            </Avatar>
+            <Typography variant="h6">職護喵</Typography>
           </Box>
           <IconButton
             color="inherit"
@@ -242,8 +245,9 @@ const ChatPage = () => {
                     bgcolor: message.type === 'user' ? 'primary.main' : 'secondary.main',
                     mx: 1,
                   }}
+                  src={message.type === 'bot' ? '/images/職護喵.png' : undefined}
                 >
-                  {message.type === 'user' ? <Person /> : <SmartToy />}
+                  {message.type === 'user' ? <Person /> : '喵'}
                 </Avatar>
                 <Box
                   sx={{
@@ -300,9 +304,7 @@ const ChatPage = () => {
             ))}
             {isLoading && (
               <ListItem>
-                <Avatar sx={{ bgcolor: 'secondary.main', mx: 1 }}>
-                  <SmartToy />
-                </Avatar>
+                <Avatar sx={{ bgcolor: 'secondary.main', mx: 1 }} src="/images/職護喵.png">喵</Avatar>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <CircularProgress size={20} />
                   <Typography variant="body2" color="text.secondary">

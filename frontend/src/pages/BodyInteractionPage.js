@@ -117,7 +117,7 @@ const BodyInteractionPage = () => {
         textAlign="center"
         sx={{ mb: 4, fontWeight: 600 }}
       >
-        圖像式互動介面
+        點身健檢
       </Typography>
 
       <Typography

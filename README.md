@@ -1,6 +1,6 @@
-# 智慧勞災保險一站式服務
+# 勞資屬道山
 
-一個基於React和FastAPI的智慧勞災保險諮詢平台，整合本地語言模型、地圖服務和圖像式互動介面。
+一個基於React和FastAPI的勞資屬道山諮詢平台，整合本地語言模型、地圖服務和圖像式互動介面。
 
 ## 🚀 快速開始
 
@@ -39,8 +39,15 @@ npm install
 #### 2. 構建前端
 
 ```bash
+# 進入前端目錄
 cd frontend
-npm run build
+
+# 若使用 Node.js 21/22 以上，請先加上 OpenSSL 相容旗標再建置
+# Windows PowerShell（當前視窗有效）
+$env:NODE_OPTIONS="--openssl-legacy-provider"; npm run build
+
+# 如果是 Node.js 18~20，仍建議優先使用下列標準指令
+# npm run build
 ```
 
 #### 3. 啟動服務
@@ -106,13 +113,22 @@ npx serve -s build -l 3000
 ## 🔧 故障排除
 
 ### Node.js 兼容性問題
-如果遇到 `error:0308010C:digital envelope routines::unsupported` 錯誤：
+如果遇到 `error:0308010C:digital envelope routines::unsupported` 錯誤（常見於 Node.js 21/22+）：
 ```bash
-# 使用生產構建模式
+# 進入前端目錄
 cd frontend
-npm run build
+
+# Windows PowerShell（當前視窗有效）
+$env:NODE_OPTIONS="--openssl-legacy-provider"; npm run build
+
+# 建置完成後啟動靜態服務
 npx serve -s build -l 3000
 ```
+若希望長期固定此設定（不建議於全域環境），可以在 PowerShell 以系統層級設定：
+```powershell
+setx NODE_OPTIONS "--openssl-legacy-provider"
+```
+或改用 Node.js 18~20 版本以避免此相容性問題。
 
 ### Ollama 連接問題
 確保 Ollama 服務正在運行：

@@ -13,6 +13,10 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import uuid
+from dotenv import load_dotenv
+
+# 載入環境變數
+load_dotenv()
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # 創建 FastAPI 應用
 app = FastAPI(
-    title="智慧勞災保險一站式服務",
+    title="勞資屬道山",
     description="提供勞災保險諮詢、地圖搜索和失能給付查詢服務",
     version="1.0.0"
 )
@@ -73,8 +77,9 @@ qa_database = load_qa_database()
 # 初始化 ChromaDB 和 Sentence Transformer
 try:
     # 初始化 ChromaDB
+    chroma_db_path = os.getenv('CHROMA_DB_PATH', './chroma_db')
     chroma_client = chromadb.Client(Settings(
-        persist_directory="./chroma_db",
+        persist_directory=chroma_db_path,
         anonymized_telemetry=False
     ))
     
@@ -287,7 +292,8 @@ def load_all_datasets_to_vector_db():
 load_all_datasets_to_vector_db()
 
 # 初始化 Ollama 客戶端
-ollama_client = ollama.Client(host='http://127.0.0.1:11434')
+ollama_host = os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434')
+ollama_client = ollama.Client(host=ollama_host)
 
 # 請求模型
 class ChatRequest(BaseModel):
@@ -389,7 +395,7 @@ def search_qa_database(question: str) -> str:
 
 @app.get("/")
 async def root():
-    return {"message": "智慧勞災保險一站式服務 API"}
+    return {"message": "勞資屬道山 API"}
 
 @app.get("/health")
 async def health_check():
@@ -502,7 +508,7 @@ async def chat(request: ChatRequest):
                     sources.append(source_name)
         
         # 構建完整的提示詞
-        prompt = f"""你是勞災保險諮詢助手，專門回答勞工保險相關問題。請根據以下相關資料回答問題。
+        prompt = f"""你是勞資屬道山諮詢助手，專門回答勞工保險相關問題。請根據以下相關資料回答問題。
 
 問題：{request.message}
 
@@ -512,8 +518,9 @@ async def chat(request: ChatRequest):
 請根據以上資料用繁體中文回答，提供準確、專業的資訊。如果資料中沒有相關資訊，請說明並建議用戶諮詢相關機構。回答請控制在200字以內："""
 
         # 使用 Ollama 生成回答
+        ollama_model = os.getenv('OLLAMA_MODEL', 'gemma3:4b')
         response = ollama_client.generate(
-            model="gemma3:4b",
+            model=ollama_model,
             prompt=prompt,
             options={
                 'temperature': 0.3,  # 降低溫度以提高準確性
@@ -593,8 +600,9 @@ async def analyze_body_part_injury(request: dict):
 請用繁體中文回答，限制在100字以內："""
 
         # 使用 Ollama 生成分析
+        ollama_model = os.getenv('OLLAMA_MODEL', 'gemma3:4b')
         response = ollama_client.generate(
-            model="gemma3:4b",
+            model=ollama_model,
             prompt=prompt,
             options={
                 'temperature': 0.7,
@@ -945,8 +953,13 @@ async def get_locations_by_city(city_name: str, type: str = "hospital"):
 
 if __name__ == "__main__":
     import uvicorn
-    print("🏥 啟動智慧勞災保險服務...")
-    print("🌐 API 服務: http://localhost:8000")
-    print("🌐 API 服務: http://127.0.0.1:8000")
-    print("📖 API 文檔: http://localhost:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    
+    # 從環境變數讀取配置
+    api_host = os.getenv('API_HOST', '0.0.0.0')
+    api_port = int(os.getenv('API_PORT', '8000'))
+    
+    print("🏥 啟動勞資屬道山服務...")
+    print(f"🌐 API 服務: http://localhost:{api_port}")
+    print(f"🌐 API 服務: http://127.0.0.1:{api_port}")
+    print(f"📖 API 文檔: http://localhost:{api_port}/docs")
+    uvicorn.run(app, host=api_host, port=api_port, log_level="info")

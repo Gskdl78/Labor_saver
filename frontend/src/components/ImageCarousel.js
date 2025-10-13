@@ -9,16 +9,20 @@ const ImageCarousel = () => {
   // 圖片路徑（假設圖片已放在 public/images 目錄下）
   const images = [
     {
+      src: '/images/屬道山.png',
+      alt: '勞資屬道山主圖',
+    },
+    {
       src: '/images/image.png',
-      alt: '勞災保險服務圖片1',
+      alt: '勞資屬道山服務圖片1',
     },
     {
       src: '/images/image1.png',
-      alt: '勞災保險服務圖片2',
+      alt: '勞資屬道山服務圖片2',
     },
     {
       src: '/images/image3.png',
-      alt: '勞災保險服務圖片3',
+      alt: '勞資屬道山服務圖片3',
     },
   ];
 

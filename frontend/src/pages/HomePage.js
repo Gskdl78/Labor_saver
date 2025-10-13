@@ -27,7 +27,7 @@ const HomePage = () => {
   const features = [
     {
       icon: <Chat sx={{ fontSize: 40, color: '#667eea' }} />,
-      title: '語言模型諮商',
+      title: '職護喵',
       description: '透過AI智能諮詢，快速了解勞災保險相關規定與申請流程',
       path: '/chat',
     },
@@ -39,7 +39,7 @@ const HomePage = () => {
     },
     {
       icon: <TouchApp sx={{ fontSize: 40, color: '#667eea' }} />,
-      title: '圖像式互動介面',
+      title: '點身健檢',
       description: '點擊受傷部位，快速查詢失能等級與給付標準',
       path: '/body-interaction',
     },
@@ -84,9 +84,7 @@ const HomePage = () => {
                 gutterBottom
                 sx={{ fontWeight: 700, mb: 2 }}
               >
-                智慧勞災保險
-                <br />
-                一站式服務
+                勞資屬道山
               </Typography>
               <Typography
                 variant="h5"

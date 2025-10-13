@@ -1,0 +1,43 @@
+# 自動處理換行符號
+* text=auto
+
+# Python 文件使用 LF
+*.py text eol=lf
+
+# JavaScript/React 文件使用 LF
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+
+# JSON 文件使用 LF
+*.json text eol=lf
+
+# Markdown 文件使用 LF
+*.md text eol=lf
+
+# HTML/CSS 文件使用 LF
+*.html text eol=lf
+*.css text eol=lf
+
+# 配置文件使用 LF
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+
+# Shell 腳本使用 LF
+*.sh text eol=lf
+
+# Windows 批次文件使用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二進制文件
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+

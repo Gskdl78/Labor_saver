@@ -29,9 +29,9 @@ const Navbar = () => {
 
   const menuItems = [
     { label: '首頁', path: '/', icon: <Home /> },
-    { label: '語言模型諮商', path: '/chat', icon: <Chat /> },
+    { label: '職護喵', path: '/chat', icon: <Chat /> },
     { label: '地圖搜索', path: '/map', icon: <Map /> },
-    { label: '圖像式互動介面', path: '/body-interaction', icon: <TouchApp /> },
+    { label: '點身健檢', path: '/body-interaction', icon: <TouchApp /> },
   ];
 
   const handleMenuOpen = (event) => {
@@ -62,7 +62,7 @@ const Navbar = () => {
           }}
           onClick={() => navigate('/')}
         >
-          智慧勞災保險服務
+          勞資屬道山
         </Typography>
 
         {isMobile ? (

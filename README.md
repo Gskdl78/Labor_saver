@@ -36,7 +36,33 @@ cd frontend
 npm install
 ```
 
-#### 2. 構建前端
+#### 2. 設定環境變數
+
+複製 `env_example.txt` 為 `.env` 並根據需要修改配置：
+
+```bash
+# 複製環境變數範例文件
+cp env_example.txt .env
+```
+
+**.env 配置說明：**
+```bash
+# API 設定
+API_HOST=localhost          # API 服務主機（0.0.0.0 允許外部訪問）
+API_PORT=8000              # API 服務端口
+
+# Ollama 設定
+OLLAMA_HOST=http://localhost:11434  # Ollama 服務地址
+OLLAMA_MODEL=gemma3:4b              # 使用的 AI 模型
+
+# ChromaDB 設定
+CHROMA_DB_PATH=./chroma_db   # 向量資料庫存儲路徑
+
+# 前端設定
+REACT_APP_API_URL=http://localhost:8000/api  # 後端 API 地址
+```
+
+#### 3. 構建前端
 
 ```bash
 # 進入前端目錄
@@ -50,7 +76,7 @@ $env:NODE_OPTIONS="--openssl-legacy-provider"; npm run build
 # npm run build
 ```
 
-#### 3. 啟動服務
+#### 4. 啟動服務
 
 **啟動後端** (在專案根目錄)：
 ```bash
@@ -62,7 +88,7 @@ python simple_backend.py
 npx serve -s build -l 3000
 ```
 
-#### 4. 訪問應用
+#### 5. 訪問應用
 
 - 前端：http://localhost:3000
 - 後端API：http://localhost:8000
@@ -138,18 +164,36 @@ ollama list  # 確認 gemma3:4b 已安裝
 ```
 
 ### 端口衝突
-- 後端默認端口：8000
-- 前端默認端口：3000
-- 如遇端口衝突，請終止占用進程或修改配置
+- 後端默認端口：8000（可在 `.env` 中修改 `API_PORT`）
+- 前端默認端口：3000（使用 `npx serve -s build -l <端口>` 修改）
+- 如遇端口衝突，請終止占用進程或通過 `.env` 文件修改配置
 
 ## 📝 開發說明
 
-### 修改模型
-如需使用其他 Ollama 模型，請修改 `simple_backend.py` 中的模型名稱：
-```python
-# 第 137 行附近
-model="gemma3:4b"  # 修改為您的模型名稱
+### 環境變數配置
+專案使用 `.env` 文件進行配置，所有主要設定都可以通過環境變數調整，無需修改程式碼。
+
+### 修改 AI 模型
+如需使用其他 Ollama 模型，請修改 `.env` 文件中的 `OLLAMA_MODEL` 設定：
+```bash
+# .env 文件
+OLLAMA_MODEL=gemma3:4b  # 修改為您的模型名稱，例如：llama2、mistral 等
 ```
+
+可用的模型可以通過以下命令查看：
+```bash
+ollama list  # 查看已安裝的模型
+ollama pull <模型名稱>  # 下載新模型
+```
+
+### 修改 API 端口
+如需修改 API 端口或主機地址，請在 `.env` 文件中調整：
+```bash
+API_HOST=0.0.0.0  # 設定為 0.0.0.0 允許外部訪問
+API_PORT=8000     # 修改為您想要的端口
+```
+
+**注意**：修改後端 API 地址後，也需要同步更新前端的 `REACT_APP_API_URL` 設定。
 
 ### 添加數據
 - 勞保局辦事處：`勞保資料集/勞保局各地辦事處.json`

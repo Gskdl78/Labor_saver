@@ -36,20 +36,25 @@ const MapComponent = ({ userLocation, locations, onLocationClick, selectedLocati
     };
   }, []);
 
-  // 清除所有標記
-  const clearMarkers = () => {
-    markersRef.current.forEach(marker => {
+  // 清除位置標記（保留用戶位置標記）
+  const clearLocationMarkers = () => {
+    // 保留第一個標記（用戶位置），刪除其他
+    const userMarker = markersRef.current[0];
+    markersRef.current.slice(1).forEach(marker => {
       mapInstanceRef.current.removeLayer(marker);
     });
-    markersRef.current = [];
+    markersRef.current = userMarker ? [userMarker] : [];
   };
 
   // 添加用戶位置標記
   useEffect(() => {
     if (!mapInstanceRef.current || !userLocation) return;
 
-    // 清除舊標記
-    clearMarkers();
+    // 清除所有舊標記
+    markersRef.current.forEach(marker => {
+      mapInstanceRef.current.removeLayer(marker);
+    });
+    markersRef.current = [];
 
     // 創建用戶位置圖標
     const userIcon = L.divIcon({
@@ -84,6 +89,9 @@ const MapComponent = ({ userLocation, locations, onLocationClick, selectedLocati
   // 添加位置標記
   useEffect(() => {
     if (!mapInstanceRef.current || !locations.length) return;
+
+    // 清除舊的位置標記（保留用戶位置標記）
+    clearLocationMarkers();
 
     // 為每個位置創建標記
     locations.forEach((location, index) => {
@@ -159,16 +167,17 @@ const MapComponent = ({ userLocation, locations, onLocationClick, selectedLocati
     });
 
     // 如果有位置數據，調整地圖視圖以包含所有標記
-    if (locations.length > 0 && userLocation) {
-      const group = new L.featureGroup([
-        L.marker([userLocation.latitude, userLocation.longitude]),
-        ...locations
-          .filter(loc => loc.latitude && loc.longitude)
-          .map(loc => L.marker([loc.latitude, loc.longitude]))
-      ]);
-      
-      mapInstanceRef.current.fitBounds(group.getBounds().pad(0.1));
-    }
+    // 註解掉自動 fitBounds，避免關閉視窗後地圖重置
+    // if (locations.length > 0 && userLocation) {
+    //   const group = new L.featureGroup([
+    //     L.marker([userLocation.latitude, userLocation.longitude]),
+    //     ...locations
+    //       .filter(loc => loc.latitude && loc.longitude)
+    //       .map(loc => L.marker([loc.latitude, loc.longitude]))
+    //   ]);
+    //   
+    //   mapInstanceRef.current.fitBounds(group.getBounds().pad(0.1));
+    // }
 
     // 設置全域點擊處理函數
     window.handleLocationClick = (index) => {
@@ -184,21 +193,37 @@ const MapComponent = ({ userLocation, locations, onLocationClick, selectedLocati
 
   }, [locations, onLocationClick, userLocation]);
 
-  // 處理選中位置的地圖跳轉
+  // 處理選中位置的地圖跳轉（醫院和辦事處都適用）
   useEffect(() => {
     if (!mapInstanceRef.current || !selectedLocation || !selectedLocation.latitude || !selectedLocation.longitude) return;
 
-    // 跳轉到選中位置
-    mapInstanceRef.current.setView([selectedLocation.latitude, selectedLocation.longitude], 15);
+    console.log('地圖跳轉到選中位置:', selectedLocation);
+
+    // 平滑跳轉到選中位置
+    mapInstanceRef.current.flyTo(
+      [selectedLocation.latitude, selectedLocation.longitude], 
+      16,
+      {
+        duration: 1.5, // 動畫持續時間（秒）
+        easeLinearity: 0.25
+      }
+    );
 
     // 找到對應的標記並打開彈窗
     const targetIndex = locations.findIndex(loc => 
+      loc.name === selectedLocation.name &&
       loc.latitude === selectedLocation.latitude && 
       loc.longitude === selectedLocation.longitude
     );
 
-    if (targetIndex !== -1 && markersRef.current[targetIndex + 1]) { // +1 因為第一個是用戶位置標記
-      markersRef.current[targetIndex + 1].openPopup();
+    console.log('找到標記索引:', targetIndex, '總標記數:', markersRef.current.length);
+
+    // +1 因為第一個是用戶位置標記
+    if (targetIndex !== -1 && markersRef.current[targetIndex + 1]) {
+      // 延遲打開彈窗，等待地圖移動完成
+      setTimeout(() => {
+        markersRef.current[targetIndex + 1].openPopup();
+      }, 1600);
     }
 
   }, [selectedLocation, locations]);

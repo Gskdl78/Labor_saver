@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""修復版後端服務"""
+"""修復版後端服務 - 優化版本"""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+import time
+from collections import defaultdict
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import logging
+import asyncio
+import traceback
 import ollama
 import chromadb
 from chromadb.config import Settings
@@ -18,16 +27,189 @@ from dotenv import load_dotenv
 # 載入環境變數
 load_dotenv()
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
+# ==================== 配置管理類 ====================
+class Config:
+    """集中式配置管理"""
+    # 基礎路徑
+    BASE_DIR = Path(__file__).parent
+    DATA_DIR = BASE_DIR / '勞保資料集'
+    
+    # 資料檔案路徑
+    QA_DATABASE = BASE_DIR / '常見問題資料庫.json'
+    DISABILITY_STANDARDS_TABLE = DATA_DIR / '勞工保險失能給付標準第三條附表.json'
+    OCCUPATIONAL_RULES = DATA_DIR / '勞工職業災害保險職業傷病審查準則.json'
+    MEDICAL_BENEFITS = DATA_DIR / '勞工職業災害保險醫療給付介紹.json'
+    BENEFIT_STANDARDS = DATA_DIR / '各失能等級之給付標準.json'
+    LABOR_OFFICES = DATA_DIR / '勞保局各地辦事處.json'
+    HOSPITALS = DATA_DIR / '衛生福利部評鑑合格之醫院名單.json'
+    HOSPITALS_WITH_COORDS = DATA_DIR / '衛生福利部評鑑合格之醫院名單_含經緯度.json'
+    
+    # API 設定
+    API_HOST = os.getenv('API_HOST', '0.0.0.0')
+    API_PORT = int(os.getenv('API_PORT', '8000'))
+    
+    # Ollama 設定
+    OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'gemma3:4b')
+    
+    # ChromaDB 設定
+    CHROMA_DB_PATH = os.getenv('CHROMA_DB_PATH', './chroma_db')
+    CHROMA_COLLECTION_NAME = "labor_insurance_knowledge"
+    
+    # 嵌入模型設定
+    EMBEDDING_MODEL_NAME = 'paraphrase-multilingual-MiniLM-L12-v2'
+    
+    # 快取設定
+    CACHE_MAX_SIZE = 1000
+    
+    # 查詢設定
+    VECTOR_SEARCH_TOP_K = 5  # 增加檢索數量，確保涵蓋更多候選答案
+    SIMILARITY_THRESHOLD = 0.6  # 相似度閾值
+    
+    # 執行緒池設定
+    THREAD_POOL_MAX_WORKERS = 4  # 執行緒池最大工作執行緒數
+    
+    # 速率限制設定
+    RATE_LIMIT_REQUESTS = 20  # 每個時間窗口的最大請求數
+    RATE_LIMIT_WINDOW = 60  # 時間窗口（秒）
+    
+    @classmethod
+    def validate(cls):
+        """驗證配置"""
+        if not cls.DATA_DIR.exists():
+            logger.warning(f"資料目錄不存在: {cls.DATA_DIR}")
+        if not 1024 <= cls.API_PORT <= 65535:
+            raise ValueError(f"API 端口必須在 1024-65535 之間，當前: {cls.API_PORT}")
+        return True
+
+# ==================== 自訂異常類 ====================
+class OllamaConnectionError(Exception):
+    """Ollama 連接錯誤"""
+    pass
+
+class VectorDatabaseError(Exception):
+    """向量資料庫錯誤"""
+    pass
+
+class DataLoadError(Exception):
+    """資料載入錯誤"""
+    pass
+
+# ==================== 日誌設定 ====================
+from logging.handlers import RotatingFileHandler
+
+# 確保日誌目錄存在
+log_dir = Path(__file__).parent / 'logs'
+log_dir.mkdir(exist_ok=True)
+
+# 設置日誌處理器
+handlers = [
+    # 主控台處理器
+    logging.StreamHandler(),
+    # 檔案處理器（自動輪替，最大10MB，保留5個備份）
+    RotatingFileHandler(
+        log_dir / 'app.log',
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=handlers
+)
 logger = logging.getLogger(__name__)
+logger.info(f"日誌系統已初始化，日誌目錄: {log_dir}")
+
+# 驗證配置
+try:
+    Config.validate()
+    logger.info("配置驗證通過")
+except Exception as e:
+    logger.error(f"配置驗證失敗: {e}")
+    raise
+
+# ==================== 執行緒池（用於非同步處理阻塞操作） ====================
+executor = ThreadPoolExecutor(max_workers=Config.THREAD_POOL_MAX_WORKERS)
+logger.info(f"執行緒池已建立：{Config.THREAD_POOL_MAX_WORKERS} 個工作執行緒")
 
 # 創建 FastAPI 應用
 app = FastAPI(
     title="勞資屬道山",
     description="提供勞災保險諮詢、地圖搜索和失能給付查詢服務",
-    version="1.0.0"
+    version="2.0.0"
 )
+
+# 應用生命週期事件
+@app.on_event("shutdown")
+async def shutdown_event():
+    """關閉時清理資源"""
+    logger.info("正在關閉執行緒池...")
+    executor.shutdown(wait=True)
+    logger.info("執行緒池已關閉")
+
+# ==================== 速率限制中間件 ====================
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """簡單的速率限制中間件（基於 IP）"""
+    def __init__(self, app):
+        super().__init__(app)
+        self.request_counts = defaultdict(list)
+        self.cleanup_interval = 60  # 清理間隔（秒）
+        self.last_cleanup = time.time()
+    
+    async def dispatch(self, request: Request, call_next):
+        # 獲取客戶端 IP
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # 定期清理過期記錄
+        current_time = time.time()
+        if current_time - self.last_cleanup > self.cleanup_interval:
+            self._cleanup_old_records(current_time)
+            self.last_cleanup = current_time
+        
+        # 檢查速率限制（僅對 API 端點）
+        if request.url.path.startswith("/api/"):
+            # 移除超出時間窗口的記錄
+            self.request_counts[client_ip] = [
+                ts for ts in self.request_counts[client_ip]
+                if current_time - ts < Config.RATE_LIMIT_WINDOW
+            ]
+            
+            # 檢查請求數是否超過限制
+            if len(self.request_counts[client_ip]) >= Config.RATE_LIMIT_REQUESTS:
+                logger.warning(f"速率限制觸發: IP {client_ip} 超過 {Config.RATE_LIMIT_REQUESTS} 次/分鐘")
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "請求過於頻繁，請稍後再試",
+                        "detail": f"每 {Config.RATE_LIMIT_WINDOW} 秒最多 {Config.RATE_LIMIT_REQUESTS} 次請求"
+                    }
+                )
+            
+            # 記錄此次請求
+            self.request_counts[client_ip].append(current_time)
+        
+        # 繼續處理請求
+        response = await call_next(request)
+        return response
+    
+    def _cleanup_old_records(self, current_time):
+        """清理過期的請求記錄"""
+        to_delete = []
+        for ip, timestamps in self.request_counts.items():
+            # 移除超出時間窗口的記錄
+            self.request_counts[ip] = [
+                ts for ts in timestamps
+                if current_time - ts < Config.RATE_LIMIT_WINDOW
+            ]
+            # 如果該 IP 沒有任何記錄，標記刪除
+            if not self.request_counts[ip]:
+                to_delete.append(ip)
+        
+        for ip in to_delete:
+            del self.request_counts[ip]
 
 # CORS 設置
 app.add_middleware(
@@ -37,6 +219,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 添加速率限制中間件
+app.add_middleware(RateLimitMiddleware)
+logger.info(f"速率限制已啟用：{Config.RATE_LIMIT_REQUESTS} 次/{Config.RATE_LIMIT_WINDOW} 秒")
 
 # 預設問題和固定答案
 PRESET_QA = {
@@ -58,18 +244,41 @@ PRESET_QA = {
     "失能等級如何評估": "失能等級評估依據失能程度、康復可能性、以及對生活功能造成的影響。由健保特約醫院出具失能診斷書，依勞工保險失能給付標準判定等級，分為15級，第1級最嚴重（1200日），第15級最輕微（30日）。評估時會考慮身體機能、工作能力、日常生活自理能力等因素。"
 }
 
-# 載入常見問題資料庫
+# ==================== 快取機制 ====================
+@lru_cache(maxsize=Config.CACHE_MAX_SIZE)
+def get_cached_embedding(question: str) -> tuple:
+    """快取問題的嵌入向量"""
+    if not embedding_model:
+        return ()
+    try:
+        embedding = embedding_model.encode([question]).tolist()[0]
+        return tuple(embedding)
+    except Exception as e:
+        logger.error(f"生成嵌入向量失敗: {e}")
+        return ()
+
+# ==================== 資料載入函數 ====================
+def load_json_file(file_path: Path, description: str = "資料") -> Optional[Any]:
+    """通用 JSON 檔案載入函數，含錯誤處理"""
+    try:
+        if not file_path.exists():
+            logger.warning(f"{description}檔案不存在: {file_path}")
+            return None
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        logger.info(f"成功載入{description}: {file_path.name}")
+        return data
+    except json.JSONDecodeError as e:
+        logger.error(f"{description} JSON 解析錯誤: {e}")
+        raise DataLoadError(f"{description}格式錯誤")
+    except Exception as e:
+        logger.error(f"載入{description}失敗: {e}")
+        return None
+
 def load_qa_database():
     """載入常見問題資料庫"""
-    try:
-        with open('常見問題資料庫.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        logger.warning("常見問題資料庫文件不存在，使用預設問題")
-        return None
-    except Exception as e:
-        logger.error(f"載入常見問題資料庫失敗: {e}")
-        return None
+    return load_json_file(Config.QA_DATABASE, "常見問題資料庫")
 
 # 載入常見問題資料庫
 qa_database = load_qa_database()
@@ -77,27 +286,28 @@ qa_database = load_qa_database()
 # 初始化 ChromaDB 和 Sentence Transformer
 try:
     # 初始化 ChromaDB
-    chroma_db_path = os.getenv('CHROMA_DB_PATH', './chroma_db')
     chroma_client = chromadb.Client(Settings(
-        persist_directory=chroma_db_path,
+        persist_directory=Config.CHROMA_DB_PATH,
         anonymized_telemetry=False
     ))
     
     # 初始化 Sentence Transformer (使用中文模型)
-    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    embedding_model = SentenceTransformer(Config.EMBEDDING_MODEL_NAME)
     
-    # 創建或獲取集合
+    # 創建或獲取集合（使用 cosine 距離度量）
     collection = chroma_client.get_or_create_collection(
-        name="labor_insurance_knowledge",
-        metadata={"description": "勞工保險知識庫"}
+        name=Config.CHROMA_COLLECTION_NAME,
+        metadata={
+            "description": "勞工保險知識庫",
+            "hnsw:space": "cosine"  # 使用余弦距離
+        }
     )
     
     logger.info("ChromaDB 和 Sentence Transformer 初始化成功")
+    logger.info(f"向量資料庫路徑: {Config.CHROMA_DB_PATH}")
 except Exception as e:
     logger.error(f"初始化 ChromaDB 失敗: {e}")
-    chroma_client = None
-    embedding_model = None
-    collection = None
+    raise VectorDatabaseError(f"向量資料庫初始化失敗: {e}")
 
 # 載入所有勞保資料集到向量數據庫
 def load_all_datasets_to_vector_db():
@@ -119,8 +329,12 @@ def load_all_datasets_to_vector_db():
         
         # 1. 載入失能給付標準第三條附表
         try:
-            with open('勞保資料集/勞工保險失能給付標準第三條附表.json', 'r', encoding='utf-8') as f:
-                disability_standards = json.load(f)
+            disability_standards = load_json_file(
+                Config.DISABILITY_STANDARDS_TABLE, 
+                "失能給付標準第三條附表"
+            )
+            if not disability_standards:
+                raise DataLoadError("失能給付標準載入失敗")
             
             for item in disability_standards:
                 doc_text = f"""
@@ -146,8 +360,12 @@ def load_all_datasets_to_vector_db():
         
         # 2. 載入職業傷病審查準則
         try:
-            with open('勞保資料集/勞工職業災害保險職業傷病審查準則.json', 'r', encoding='utf-8') as f:
-                occupational_rules = json.load(f)
+            occupational_rules = load_json_file(
+                Config.OCCUPATIONAL_RULES,
+                "職業傷病審查準則"
+            )
+            if not occupational_rules:
+                raise DataLoadError("職業傷病審查準則載入失敗")
             
             for item in occupational_rules:
                 doc_text = f"""
@@ -169,8 +387,12 @@ def load_all_datasets_to_vector_db():
         
         # 3. 載入醫療給付介紹
         try:
-            with open('勞保資料集/勞工職業災害保險醫療給付介紹.json', 'r', encoding='utf-8') as f:
-                medical_benefits = json.load(f)
+            medical_benefits = load_json_file(
+                Config.MEDICAL_BENEFITS,
+                "醫療給付介紹"
+            )
+            if not medical_benefits:
+                raise DataLoadError("醫療給付介紹載入失敗")
             
             for item in medical_benefits:
                 doc_text = f"""
@@ -193,8 +415,12 @@ def load_all_datasets_to_vector_db():
         
         # 4. 載入各失能等級之給付標準
         try:
-            with open('勞保資料集/各失能等級之給付標準.json', 'r', encoding='utf-8') as f:
-                benefit_standards = json.load(f)
+            benefit_standards = load_json_file(
+                Config.BENEFIT_STANDARDS,
+                "各失能等級給付標準"
+            )
+            if not benefit_standards:
+                raise DataLoadError("給付標準載入失敗")
             
             for item in benefit_standards:
                 doc_text = f"""
@@ -216,8 +442,12 @@ def load_all_datasets_to_vector_db():
         
         # 5. 載入勞保局辦事處資料
         try:
-            with open('勞保資料集/勞保局各地辦事處.json', 'r', encoding='utf-8') as f:
-                labor_offices = json.load(f)
+            labor_offices = load_json_file(
+                Config.LABOR_OFFICES,
+                "勞保局辦事處"
+            )
+            if not labor_offices:
+                raise DataLoadError("勞保局辦事處資料載入失敗")
             
             for item in labor_offices:
                 doc_text = f"""
@@ -241,8 +471,12 @@ def load_all_datasets_to_vector_db():
         
         # 6. 載入醫院名單
         try:
-            with open('勞保資料集/衛生福利部評鑑合格之醫院名單.json', 'r', encoding='utf-8') as f:
-                hospitals = json.load(f)
+            hospitals = load_json_file(
+                Config.HOSPITALS,
+                "醫院名單"
+            )
+            if not hospitals:
+                raise DataLoadError("醫院名單載入失敗")
             
             for item in hospitals:
                 doc_text = f"""
@@ -265,20 +499,34 @@ def load_all_datasets_to_vector_db():
         except Exception as e:
             logger.error(f"載入醫院名單失敗: {e}")
         
-        # 批量添加到向量數據庫
+        # 批次添加到向量數據庫（優化：分批處理）
         if documents:
-            # 生成嵌入向量
-            embeddings = embedding_model.encode(documents).tolist()
+            batch_size = 100  # 每批處理 100 條記錄
+            total_batches = (len(documents) + batch_size - 1) // batch_size
             
-            # 添加到 ChromaDB
-            collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids,
-                embeddings=embeddings
-            )
+            logger.info(f"開始批次載入 {len(documents)} 條記錄，分 {total_batches} 批處理")
             
-            logger.info(f"成功載入 {len(documents)} 條記錄到向量數據庫")
+            for i in range(0, len(documents), batch_size):
+                batch_end = min(i + batch_size, len(documents))
+                batch_docs = documents[i:batch_end]
+                batch_metas = metadatas[i:batch_end]
+                batch_ids = ids[i:batch_end]
+                
+                # 生成嵌入向量（批次）
+                batch_embeddings = embedding_model.encode(batch_docs).tolist()
+                
+                # 添加到 ChromaDB
+                collection.add(
+                    documents=batch_docs,
+                    metadatas=batch_metas,
+                    ids=batch_ids,
+                    embeddings=batch_embeddings
+                )
+                
+                batch_num = (i // batch_size) + 1
+                logger.info(f"批次 {batch_num}/{total_batches} 完成（{batch_end}/{len(documents)} 條記錄）")
+            
+            logger.info(f"✅ 成功載入 {len(documents)} 條記錄到向量數據庫")
             return True
         else:
             logger.warning("沒有找到任何文檔來載入")
@@ -292,19 +540,96 @@ def load_all_datasets_to_vector_db():
 load_all_datasets_to_vector_db()
 
 # 初始化 Ollama 客戶端
-ollama_host = os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434')
-ollama_client = ollama.Client(host=ollama_host)
+try:
+    ollama_client = ollama.Client(host=Config.OLLAMA_HOST)
+    logger.info(f"Ollama 客戶端初始化成功: {Config.OLLAMA_HOST}")
+except Exception as e:
+    logger.error(f"Ollama 客戶端初始化失敗: {e}")
+    ollama_client = None
 
-# 請求模型
+# ==================== Pydantic 模型（輸入驗證） ====================
+
 class ChatRequest(BaseModel):
-    message: str
-    session_id: str = "default"
+    """聊天請求模型"""
+    message: str = Field(..., min_length=1, max_length=500, description="用戶問題")
+    session_id: str = Field(default="default", max_length=100, description="會話ID")
+    
+    @field_validator('message')
+    @classmethod
+    def validate_message(cls, v):
+        if not v or not v.strip():
+            raise ValueError('問題不能為空')
+        return v.strip()
 
 class ChatResponse(BaseModel):
+    """聊天回應模型"""
     response: str
     sources: List[str]
     success: bool
 
+class BodyPartInjuryRequest(BaseModel):
+    """身體部位傷害分析請求"""
+    body_part: str = Field(..., min_length=2, max_length=50, description="身體部位")
+    injury_description: str = Field(..., min_length=5, max_length=500, description="傷害描述")
+    
+    @field_validator('body_part')
+    @classmethod
+    def validate_body_part(cls, v):
+        allowed_parts = [
+            '頭部', '頸部', '上肢', '下肢', '軀幹', '胸腹部', 
+            '眼', '耳', '鼻', '口', '手', '腳', '背部', '腰部',
+            '精神', '神經', '皮膚', '頭', '臉', '手指', '腳趾'
+        ]
+        if not any(part in v for part in allowed_parts):
+            logger.warning(f"未識別的身體部位: {v}")
+        return v.strip()
+
+class DisabilityBenefitRequest(BaseModel):
+    """失能給付查詢請求"""
+    level: int = Field(..., ge=1, le=15, description="失能等級 (1-15)")
+    injury_type: str = Field(default="普通傷病", description="傷病類型")
+    
+    @field_validator('injury_type')
+    @classmethod
+    def validate_injury_type(cls, v):
+        allowed_types = ["普通傷病", "職業傷病", "職業災害", "職業", "普通"]
+        if v not in allowed_types:
+            return "普通傷病"
+        return v
+
+class NearbyLocationRequest(BaseModel):
+    """附近位置查詢請求"""
+    latitude: float = Field(..., ge=-90, le=90, description="緯度")
+    longitude: float = Field(..., ge=-180, le=180, description="經度")
+    type: str = Field(default="hospital", description="位置類型")
+    radius: float = Field(default=50, ge=1, le=200, description="搜索半徑（公里）")
+    
+    @field_validator('type')
+    @classmethod
+    def validate_type(cls, v):
+        allowed_types = ["hospital", "labor_office"]
+        if v not in allowed_types:
+            raise ValueError(f'類型必須是 {allowed_types} 之一')
+        return v
+
+# ==================== 非同步包裝函數 ====================
+async def async_ollama_generate(client, model: str, prompt: str, options: dict) -> dict:
+    """非同步包裝 Ollama 生成函數（在執行緒池中運行）"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        executor,
+        lambda: client.generate(model=model, prompt=prompt, options=options)
+    )
+
+async def async_vector_search(question: str, top_k: int = None) -> List[dict]:
+    """非同步包裝向量搜索（在執行緒池中運行）"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        executor,
+        lambda: search_vector_database(question, top_k)
+    )
+
+# ==================== 原有函數 ====================
 def find_preset_answer(question: str) -> str:
     """查找預設問題的答案 - 優先使用JSON資料庫"""
     question = question.strip()
@@ -329,36 +654,53 @@ def find_preset_answer(question: str) -> str:
     
     return ""
 
-def search_vector_database(question: str, top_k: int = 3) -> List[dict]:
-    """在向量數據庫中搜索相關文檔"""
+def search_vector_database(question: str, top_k: int = None) -> List[dict]:
+    """在向量數據庫中搜索相關文檔（使用快取）"""
     if not collection or not embedding_model:
+        logger.warning("向量資料庫或嵌入模型未初始化")
         return []
     
+    if top_k is None:
+        top_k = Config.VECTOR_SEARCH_TOP_K
+    
     try:
-        # 生成查詢向量
-        query_embedding = embedding_model.encode([question]).tolist()[0]
+        # 使用快取獲取查詢向量
+        query_embedding = get_cached_embedding(question)
+        if not query_embedding:
+            logger.error("無法生成查詢向量")
+            return []
         
-        # 搜索相似文檔
+        # 搜索相似文檔（取更多候選，便於過濾）
         results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
+            query_embeddings=[list(query_embedding)],
+            n_results=top_k * 2,  # 多取一些候選
             include=['documents', 'metadatas', 'distances']
         )
         
-        # 格式化結果
+        # 格式化結果並過濾低相似度結果
         formatted_results = []
         if results['documents'] and results['documents'][0]:
             for i, doc in enumerate(results['documents'][0]):
-                formatted_results.append({
-                    'document': doc,
-                    'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
-                    'distance': results['distances'][0][i] if results['distances'] else 0
-                })
+                distance = results['distances'][0][i] if results['distances'] else 1.0
+                similarity = 1 - distance  # 轉換距離為相似度
+                
+                # 只保留高相似度結果
+                if similarity >= Config.SIMILARITY_THRESHOLD:
+                    formatted_results.append({
+                        'document': doc,
+                        'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
+                        'distance': distance,
+                        'similarity': round(similarity, 3)
+                    })
         
-        return formatted_results
+        # 返回 top_k 個結果
+        return formatted_results[:top_k]
         
+    except chromadb.errors.ChromaError as e:
+        logger.error(f"ChromaDB 錯誤: {e}")
+        raise VectorDatabaseError(f"向量資料庫查詢失敗: {e}")
     except Exception as e:
-        logger.error(f"向量數據庫搜索失敗: {e}")
+        logger.error(f"向量數據庫搜索失敗: {traceback.format_exc()}")
         return []
 
 def search_qa_database(question: str) -> str:
@@ -482,32 +824,88 @@ async def reload_vector_database():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """RAG增強版聊天 API"""
+    """RAG增強版聊天 API（含完善錯誤處理 + 非同步處理）"""
     try:
-        # 1. 先檢查是否有預設答案
-        preset_answer = find_preset_answer(request.message)
-        if preset_answer and preset_answer.strip():
+        # 0. 【優先】檢查是否為常見問題，直接從資料庫快速回答
+        faq_answer = search_qa_database(request.message)
+        if faq_answer and faq_answer.strip():
+            logger.info(f"✅ 常見問題快速回答: {request.message[:50]}")
             return ChatResponse(
-                response=preset_answer,
-                sources=["預設知識庫"],
+                response=faq_answer,
+                sources=["常見問題資料庫"],
                 success=True
             )
         
-        # 2. 使用RAG系統搜索相關文檔
-        relevant_docs = search_vector_database(request.message, top_k=3)
+        # 1. 如果不是常見問題，使用RAG系統搜索相關文檔（非同步）
+        try:
+            relevant_docs = await async_vector_search(request.message)
+            logger.info(f"找到 {len(relevant_docs)} 個相關文檔")
+        except VectorDatabaseError as e:
+            logger.warning(f"向量資料庫查詢失敗，使用降級策略: {e}")
+            relevant_docs = []
         
-        # 3. 構建基於文檔的提示詞
+        # 2. 如果向量搜索沒有結果，嘗試使用預設答案（備用）
+        if not relevant_docs:
+            preset_answer = find_preset_answer(request.message)
+            if preset_answer and preset_answer.strip():
+                logger.info(f"向量搜索無結果，使用預設答案回覆問題: {request.message[:50]}")
+                return ChatResponse(
+                    response=preset_answer,
+                    sources=["預設知識庫"],
+                    success=True
+                )
+        
+        # 3. 智能排序和構建基於文檔的提示詞
         context_text = ""
         sources = []
         
         if relevant_docs:
+            # 智能排序：優先顯示與問題關鍵詞完全匹配的文檔
+            def calc_keyword_match_score(doc, question):
+                """計算關鍵詞匹配分數"""
+                doc_text = doc['document'].lower()
+                question_lower = question.lower()
+                score = 0
+                
+                # 提取問題中的關鍵短語
+                key_phrases = []
+                if "僅能從事輕便工作" in question:
+                    key_phrases.append("僅能從事輕便工作")
+                if "終身無工作能力" in question:
+                    key_phrases.append("終身無工作能力")
+                if "終身僅能從事輕便工作" in question:
+                    key_phrases.append("終身僅能從事輕便工作")
+                
+                # 計算匹配分數
+                for phrase in key_phrases:
+                    if phrase.lower() in doc_text:
+                        score += 10  # 關鍵短語完全匹配，高權重
+                
+                return score
+            
+            # 為每個文檔計算綜合分數（相似度 + 關鍵詞匹配）
+            scored_docs = []
             for doc in relevant_docs:
-                context_text += f"\n相關資訊：\n{doc['document']}\n"
+                similarity = doc.get('similarity', 0)
+                keyword_score = calc_keyword_match_score(doc, request.message)
+                total_score = similarity + (keyword_score * 0.05)  # 關鍵詞匹配增加額外分數
+                scored_docs.append((total_score, doc))
+            
+            # 按綜合分數降序排序
+            scored_docs.sort(key=lambda x: x[0], reverse=True)
+            
+            # 構建 context（優先顯示高分結果）
+            for total_score, doc in scored_docs:
+                similarity = doc.get('similarity', 0)
+                context_text += f"\n相關資訊（相似度: {similarity:.3f}）：\n{doc['document']}\n"
                 source_name = doc['metadata'].get('source', '未知來源')
                 if source_name not in sources:
                     sources.append(source_name)
         
-        # 構建完整的提示詞
+        # 4. 使用 Ollama 生成回答（非同步）
+        if not ollama_client:
+            raise OllamaConnectionError("Ollama 客戶端未初始化")
+        
         prompt = f"""你是勞資屬道山諮詢助手，專門回答勞工保險相關問題。請根據以下相關資料回答問題。
 
 問題：{request.message}
@@ -515,37 +913,65 @@ async def chat(request: ChatRequest):
 相關資料：
 {context_text}
 
-請根據以上資料用繁體中文回答，提供準確、專業的資訊。如果資料中沒有相關資訊，請說明並建議用戶諮詢相關機構。回答請控制在200字以內："""
+重要提示：
+1. 請**仔細閱讀**用戶問題中的每一個關鍵詞，特別注意「終身無工作能力」vs「終身僅能從事輕便工作」等細微差別
+2. 請從相關資料中找出**完全匹配**用戶描述狀況的條目
+3. 不同的失能狀態對應不同的失能等級，請確保選擇正確的等級
+4. 如果資料中有失能等級資訊，請明確指出等級數字
 
-        # 使用 Ollama 生成回答
-        ollama_model = os.getenv('OLLAMA_MODEL', 'gemma3:4b')
-        response = ollama_client.generate(
-            model=ollama_model,
-            prompt=prompt,
-            options={
-                'temperature': 0.3,  # 降低溫度以提高準確性
-                'top_p': 0.8,
-                'max_tokens': 300,  # 增加token數以支持更詳細的回答
-            }
-        )
+請根據以上資料用繁體中文回答，提供準確、專業的資訊。回答請控制在200字以內："""
+
+        try:
+            response = await async_ollama_generate(
+                ollama_client,
+                Config.OLLAMA_MODEL,
+                prompt,
+                {
+                    'temperature': 0.3,
+                    'top_p': 0.8,
+                    'max_tokens': 300,
+                }
+            )
+            answer = response['response'].strip()
+        except Exception as e:
+            logger.error(f"Ollama 生成回答失敗: {e}")
+            raise OllamaConnectionError(f"AI 模型回應失敗: {e}")
         
-        answer = response['response'].strip()
-        
-        # 如果沒有找到相關文檔，添加說明
+        # 5. 處理回答
         if not relevant_docs:
             answer += "\n\n注意：此問題的相關資料可能不在我們的知識庫中，建議您直接聯繫勞保局或相關機構獲得更準確的資訊。"
             sources = ["AI 語言模型"]
         else:
             sources.append("AI 語言模型")
         
+        logger.info(f"成功回覆問題，使用資料來源: {sources}")
         return ChatResponse(
             response=answer,
             sources=sources,
             success=True
         )
-        
+    
+    # 分類錯誤處理
+    except OllamaConnectionError as e:
+        logger.error(f"Ollama 連接錯誤: {e}")
+        # 降級策略：返回提示訊息
+        return ChatResponse(
+            response="AI 服務暫時無法使用，請稍後再試或直接聯繫勞保局：0800-078-777",
+            sources=["系統訊息"],
+            success=False
+        )
+    except VectorDatabaseError as e:
+        logger.error(f"向量資料庫錯誤: {e}")
+        return ChatResponse(
+            response="知識庫查詢暫時無法使用，請稍後再試。您也可以直接撥打勞保局專線：0800-078-777",
+            sources=["系統訊息"],
+            success=False
+        )
+    except ValueError as e:
+        logger.error(f"輸入驗證錯誤: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"聊天處理失敗: {e}")
+        logger.error(f"未預期的錯誤: {traceback.format_exc()}")
         return ChatResponse(
             response="抱歉，處理您的問題時發生錯誤，請稍後再試。",
             sources=[],
@@ -553,23 +979,17 @@ async def chat(request: ChatRequest):
         )
 
 @app.post("/api/disability/body-part")
-async def analyze_body_part_injury(request: dict):
-    """根據身體部位和傷害描述分析可能的失能等級"""
+async def analyze_body_part_injury(request: BodyPartInjuryRequest):
+    """根據身體部位和傷害描述分析可能的失能等級（含輸入驗證）"""
     try:
-        body_part = request.get("body_part", "")
-        injury_description = request.get("injury_description", "")
-        
-        if not body_part or not injury_description:
-            return {
-                "error": "請提供身體部位和傷害描述",
-                "success": False
-            }
+        if not ollama_client:
+            raise OllamaConnectionError("Ollama 客戶端未初始化")
         
         # 構建分析提示詞
         prompt = f"""你是勞工保險失能給付標準專家。請根據以下資訊分析可能的失能等級：
 
-身體部位：{body_part}
-傷害描述：{injury_description}
+身體部位：{request.body_part}
+傷害描述：{request.injury_description}
 
 勞工保險失能給付標準分為12類：精神、神經、眼、耳、鼻、口、胸腹部臟器、軀幹、頭臉頸、皮膚、上肢、下肢。
 
@@ -599,12 +1019,12 @@ async def analyze_body_part_injury(request: dict):
 
 請用繁體中文回答，限制在100字以內："""
 
-        # 使用 Ollama 生成分析
-        ollama_model = os.getenv('OLLAMA_MODEL', 'gemma3:4b')
-        response = ollama_client.generate(
-            model=ollama_model,
-            prompt=prompt,
-            options={
+        # 使用 Ollama 生成分析（非同步）
+        response = await async_ollama_generate(
+            ollama_client,
+            Config.OLLAMA_MODEL,
+            prompt,
+            {
                 'temperature': 0.7,
                 'top_p': 0.9,
                 'max_tokens': 150,
@@ -612,16 +1032,26 @@ async def analyze_body_part_injury(request: dict):
         )
         
         analysis = response['response'].strip()
+        logger.info(f"成功分析身體部位傷害: {request.body_part}")
         
         return {
-            "body_part": body_part,
-            "injury_description": injury_description,
+            "body_part": request.body_part,
+            "injury_description": request.injury_description,
             "analysis": analysis,
             "success": True
         }
-        
+    
+    except OllamaConnectionError as e:
+        logger.error(f"Ollama 連接錯誤: {e}")
+        return {
+            "error": "AI 服務暫時無法使用，請稍後再試",
+            "success": False
+        }
+    except ValueError as e:
+        logger.error(f"輸入驗證錯誤: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"身體部位分析失敗: {e}")
+        logger.error(f"身體部位分析失敗: {traceback.format_exc()}")
         return {
             "error": "分析身體部位傷害時發生錯誤",
             "success": False
@@ -630,28 +1060,16 @@ async def analyze_body_part_injury(request: dict):
 # 載入失能給付標準數據
 def load_disability_benefit_standards():
     """載入失能給付標準數據"""
-    try:
-        with open('勞保資料集/各失能等級之給付標準.json', 'r', encoding='utf-8') as f:
-            standards = json.load(f)
-        return standards
-    except Exception as e:
-        logger.error(f"載入失能給付標準失敗: {e}")
-        return None
+    return load_json_file(Config.BENEFIT_STANDARDS, "失能給付標準")
 
 # 載入失能給付標準
 disability_standards = load_disability_benefit_standards()
 
 @app.post("/api/disability/benefit")
-async def get_disability_benefit(request: dict):
-    """根據失能等級查詢給付標準"""
+async def get_disability_benefit(request: DisabilityBenefitRequest):
+    """根據失能等級查詢給付標準（含輸入驗證）"""
     try:
-        level = request.get("level")
-        injury_type = request.get("injury_type", "普通傷病")
-        
-        logger.info(f"查詢失能給付: level={level}, injury_type={injury_type}")
-        
-        if not level:
-            return {"error": "請提供失能等級", "success": False}
+        logger.info(f"查詢失能給付: level={request.level}, injury_type={request.injury_type}")
         
         if not disability_standards:
             return {"error": "失能給付標準數據載入失敗", "success": False}
@@ -659,19 +1077,19 @@ async def get_disability_benefit(request: dict):
         # 從JSON數據中查找對應等級
         level_data = None
         for standard in disability_standards:
-            if standard["失能等級"] == str(level):
+            if standard["失能等級"] == str(request.level):
                 level_data = standard
                 break
         
         if not level_data:
-            return {"error": f"無效的失能等級: {level}", "success": False}
+            raise ValueError(f"無效的失能等級: {request.level}")
         
         # 提取給付日數
         ordinary_days = int(level_data["普通傷病失能補助費給付標準"].replace("日", ""))
         occupational_days = int(level_data["職業傷病失能補償費給付標準"].replace("日", ""))
         
         # 確定傷病類型
-        if injury_type in ["職業傷病", "職業災害", "職業"]:
+        if request.injury_type in ["職業傷病", "職業災害", "職業"]:
             benefit_type = "職業"
             benefit_days = occupational_days
         else:
@@ -679,17 +1097,16 @@ async def get_disability_benefit(request: dict):
             benefit_days = ordinary_days
         
         # 構建詳細說明
-        level_int = int(level)
-        severity = '較嚴重' if level_int <= 5 else '中等' if level_int <= 10 else '較輕微'
+        severity = '較嚴重' if request.level <= 5 else '中等' if request.level <= 10 else '較輕微'
         
-        explanation = f"""失能等級第{level}級給付標準：
+        explanation = f"""失能等級第{request.level}級給付標準：
 
 給付日數：{benefit_days}日
-傷病類型：{injury_type}
+傷病類型：{request.injury_type}
 給付標準：{benefit_type}傷病
 
 說明：
-• 失能等級第{level}級屬於{severity}的失能程度
+• 失能等級第{request.level}級屬於{severity}的失能程度
 • 給付日數依勞工保險失能給付標準計算
 • 職業傷病給付日數為普通傷病的1.5倍
 • 實際給付金額需依投保薪資計算
@@ -699,9 +1116,10 @@ async def get_disability_benefit(request: dict):
 • 申請時需檢附相關醫療證明文件
 • 給付標準可能因法規修訂而調整"""
         
+        logger.info(f"成功查詢失能給付: 等級{request.level}，類型{request.injury_type}")
         return {
-            "level": level,
-            "injury_type": injury_type,
+            "level": request.level,
+            "injury_type": request.injury_type,
             "benefit_type": benefit_type,
             "benefit_days": benefit_days,
             "ordinary_days": ordinary_days,
@@ -711,9 +1129,12 @@ async def get_disability_benefit(request: dict):
             "explanation": explanation,
             "success": True
         }
-        
+    
+    except ValueError as e:
+        logger.error(f"輸入驗證錯誤: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"查詢失能給付失敗: {e}")
+        logger.error(f"查詢失能給付失敗: {traceback.format_exc()}")
         return {
             "error": "查詢失能給付時發生錯誤",
             "success": False
@@ -724,13 +1145,15 @@ def load_map_data():
     """載入地圖相關數據"""
     try:
         # 載入勞保局辦事處數據
-        with open('勞保資料集/勞保局各地辦事處.json', 'r', encoding='utf-8') as f:
-            labor_offices = json.load(f)
+        labor_offices = load_json_file(Config.LABOR_OFFICES, "勞保局辦事處")
         
         # 載入醫院數據（使用含經緯度的版本）
-        with open('勞保資料集/衛生福利部評鑑合格之醫院名單_含經緯度.json', 'r', encoding='utf-8') as f:
-            hospitals = json.load(f)
+        hospitals = load_json_file(Config.HOSPITALS_WITH_COORDS, "醫院名單（含經緯度）")
         
+        if not labor_offices or not hospitals:
+            raise DataLoadError("地圖數據載入不完整")
+        
+        logger.info(f"成功載入地圖數據：辦事處 {len(labor_offices)} 個，醫院 {len(hospitals)} 家")
         return {
             "labor_offices": labor_offices,
             "hospitals": hospitals
@@ -759,28 +1182,19 @@ async def get_cities():
     }
 
 @app.post("/api/maps/nearby")
-async def get_nearby_locations(request: dict):
-    """獲取附近位置"""
+async def get_nearby_locations(request: NearbyLocationRequest):
+    """獲取附近位置（含輸入驗證）"""
     try:
-        latitude = request.get("latitude")
-        longitude = request.get("longitude")
-        location_type = request.get("type", "hospital")
-        radius = request.get("radius", 50)
-        
-        logger.info(f"收到地圖搜索請求: lat={latitude}, lng={longitude}, type={location_type}, radius={radius}")
-        
-        if not latitude or not longitude:
-            logger.error("缺少緯度或經度")
-            return {"error": "請提供緯度和經度", "success": False}
+        logger.info(f"收到地圖搜索請求: lat={request.latitude}, lng={request.longitude}, type={request.type}, radius={request.radius}")
         
         if not map_data:
             logger.error("地圖數據未載入")
-            return {"error": "地圖數據載入失敗", "success": False}
+            raise DataLoadError("地圖數據載入失敗")
         
         # 計算距離並篩選附近的點
         nearby_locations = []
         
-        if location_type == "hospital":
+        if request.type == "hospital":
             import math
             
             # 計算真實距離（使用Haversine公式）
@@ -809,7 +1223,7 @@ async def get_nearby_locations(request: dict):
                     continue
                 
                 # 計算距離
-                distance_km = calculate_distance(latitude, longitude, hospital_lat, hospital_lng)
+                distance_km = calculate_distance(request.latitude, request.longitude, hospital_lat, hospital_lng)
                 
                 # 解析醫院等級
                 level_text = hospital["醫院評鑑評鑑結果"]
@@ -845,7 +1259,7 @@ async def get_nearby_locations(request: dict):
             for category, hospitals in hospital_categories.items():
                 hospitals.sort(key=lambda x: x["distance"])
                 nearby_locations.extend(hospitals[:3])  # 每類取最近的3個
-        elif location_type == "labor_office":
+        elif request.type == "labor_office":
             logger.info(f"處理勞保局辦事處搜索，共有 {len(map_data['labor_offices'])} 個辦事處")
             # 簡化距離計算，直接返回所有勞保局辦事處
             for office in map_data["labor_offices"]:
@@ -853,8 +1267,8 @@ async def get_nearby_locations(request: dict):
                 office_lng = float(office["經度"])
                 
                 # 簡單的距離計算
-                lat_diff = latitude - office_lat
-                lng_diff = longitude - office_lng
+                lat_diff = request.latitude - office_lat
+                lng_diff = request.longitude - office_lng
                 distance_km = ((lat_diff ** 2 + lng_diff ** 2) ** 0.5) * 111
                 
                 nearby_locations.append({
@@ -876,7 +1290,7 @@ async def get_nearby_locations(request: dict):
         nearby_locations.sort(key=lambda x: x.get("distance", 0))
         
         # 根據類型限制返回數量
-        if location_type == "hospital":
+        if request.type == "hospital":
             # 醫院按等級分類返回（每類3個，共12個）
             result_locations = nearby_locations[:12]  # 最多12個（4類×3個）
             
@@ -898,9 +1312,15 @@ async def get_nearby_locations(request: dict):
             "message": result_message,
             "success": True
         }
-        
+    
+    except DataLoadError as e:
+        logger.error(f"地圖數據錯誤: {e}")
+        return {"error": "地圖數據暫時無法使用", "success": False}
+    except ValueError as e:
+        logger.error(f"輸入驗證錯誤: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"獲取附近位置失敗: {e}")
+        logger.error(f"獲取附近位置失敗: {traceback.format_exc()}")
         return {"error": "獲取附近位置失敗", "success": False}
 
 @app.get("/api/maps/city/{city_name}")
@@ -954,12 +1374,27 @@ async def get_locations_by_city(city_name: str, type: str = "hospital"):
 if __name__ == "__main__":
     import uvicorn
     
-    # 從環境變數讀取配置
-    api_host = os.getenv('API_HOST', '0.0.0.0')
-    api_port = int(os.getenv('API_PORT', '8000'))
+    print("=" * 60)
+    print("🏥 啟動勞資屬道山服務 v2.1（第二階段優化版）")
+    print("=" * 60)
+    print(f"🌐 API 服務: http://localhost:{Config.API_PORT}")
+    print(f"🌐 API 服務: http://127.0.0.1:{Config.API_PORT}")
+    print(f"📖 API 文檔: http://localhost:{Config.API_PORT}/docs")
+    print(f"🤖 AI 模型: {Config.OLLAMA_MODEL}")
+    print(f"💾 資料目錄: {Config.DATA_DIR}")
+    print(f"📝 日誌目錄: {log_dir}")
+    print("=" * 60)
+    print("\n✅ 第一階段優化:")
+    print("  • 配置集中管理")
+    print("  • LRU 快取機制")
+    print("  • 完善錯誤處理")
+    print("  • Pydantic 輸入驗證")
+    print("  • 相似度閾值過濾")
+    print("\n⚡ 第二階段優化:")
+    print("  • 非同步處理（ThreadPoolExecutor）")
+    print("  • 批次資料載入")
+    print("  • API 速率限制（20次/分鐘）")
+    print("  • 日誌輪替系統（10MB，5個備份）")
+    print("=" * 60)
     
-    print("🏥 啟動勞資屬道山服務...")
-    print(f"🌐 API 服務: http://localhost:{api_port}")
-    print(f"🌐 API 服務: http://127.0.0.1:{api_port}")
-    print(f"📖 API 文檔: http://localhost:{api_port}/docs")
-    uvicorn.run(app, host=api_host, port=api_port, log_level="info")
+    uvicorn.run(app, host=Config.API_HOST, port=Config.API_PORT, log_level="info")

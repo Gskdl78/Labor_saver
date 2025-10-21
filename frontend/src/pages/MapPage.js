@@ -304,7 +304,10 @@ const MapPage = () => {
       {/* 位置詳情對話框 */}
       <Dialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={() => {
+          setDialogOpen(false);
+          // 不清除 selectedLocation 和 mapSelectedLocation，保持地圖位置
+        }}
         maxWidth="sm"
         fullWidth
       >

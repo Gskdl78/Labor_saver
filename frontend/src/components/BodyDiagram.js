@@ -1,154 +1,179 @@
-import React from 'react';
-import { Box, Typography } from '@mui/material';
+import React, { useState } from 'react';
+import {
+  Box,
+  Typography,
+  ToggleButton,
+  ToggleButtonGroup,
+  Paper,
+  Chip,
+} from '@mui/material';
+import { Male, Female } from '@mui/icons-material';
 
 const BodyDiagram = ({ selectedBodyPart, onBodyPartClick }) => {
-  // 身體部位樣式
-  const getPartStyle = (partName) => ({
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-    filter: selectedBodyPart === partName 
-      ? 'drop-shadow(0 4px 8px rgba(102, 126, 234, 0.5))' 
-      : 'none',
-    '&:hover': {
-      filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3))',
-    },
-  });
+  const [gender, setGender] = useState('male');
 
-  const handlePartClick = (partName) => {
+  // 根據圖片上的標註位置定義可點擊區域（精確調整坐標）
+  const bodyParts = [
+    // 左側標註
+    { name: '眼', x: 11, y: 19, width: 50 },
+    { name: '嘴巴', x: 8, y: 25, width: 60 },
+    { name: '右手臂', x: 5, y: 37, width: 70 },
+    { name: '腹部', x: 7, y: 51, width: 60 },
+    { name: '右手掌', x: 5, y: 62, width: 70 },
+    { name: '右腳', x: 8, y: 78, width: 60 },
+    { name: '右腳趾', x: 4, y: 93, width: 70 },
+    
+    // 右側標註
+    { name: '頭', x: 88, y: 14, width: 50 },
+    { name: '耳朵', x: 88, y: 21, width: 60 },
+    { name: '胸', x: 88, y: 35, width: 50 },
+    { name: '左手臂', x: 88, y: 42, width: 70 },
+    { name: '左手掌', x: 88, y: 61, width: 70 },
+    { name: '左腳', x: 88, y: 78, width: 60 },
+    { name: '左腳趾', x: 88, y: 93, width: 70 },
+  ];
+
+  const handleGenderChange = (event, newGender) => {
+    if (newGender !== null) {
+      setGender(newGender);
+    }
+  };
+
+  const handleBodyPartClick = (partName) => {
     if (onBodyPartClick) {
       onBodyPartClick(partName);
     }
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      <Typography variant="h6" gutterBottom sx={{ mb: 2 }}>
-        可點擊的人體部位圖
-      </Typography>
-      
-      <Box
-        sx={{
-          maxWidth: '400px',
-          width: '100%',
-          '& svg': {
-            width: '100%',
-            height: 'auto',
-            display: 'block',
-          },
-        }}
-      >
-        <svg viewBox="0 0 360 740" role="img" aria-label="人體可點擊圖">
-          <defs>
-            <style>
-              {`
-                :root {
-                  --skin: #F4C7A7;
-                  --top: #3BA7F0;
-                  --bottom: #FF826E;
-                  --hover: rgba(102, 126, 234, 0.3);
-                }
-                .hit { fill: transparent; pointer-events: all; }
-                .part { transition: filter 0.15s ease; }
-                .part:hover { filter: drop-shadow(0 2px 4px var(--hover)); }
-                .selected { filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.5)); }
-              `}
-            </style>
-          </defs>
-          
-          <g>
-            {/* 地面陰影 */}
-            <ellipse cx="180" cy="720" rx="70" ry="16" fill="#000" opacity="0.06"/>
-
-            {/* 頭部 */}
-            <g onClick={() => handlePartClick('頭')}>
-              <rect className="hit" x="120" y="80" width="120" height="140"/>
-              <g className={`part ${selectedBodyPart === '頭' ? 'selected' : ''}`}>
-                <ellipse cx="180" cy="150" rx="55" ry="70" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 頸部 */}
-            <g onClick={() => handlePartClick('頸部')}>
-              <rect className="hit" x="158" y="212" width="44" height="24"/>
-              <g className={`part ${selectedBodyPart === '頸部' ? 'selected' : ''}`}>
-                <rect x="158" y="212" width="44" height="24" rx="8" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 身體 */}
-            <g onClick={() => handlePartClick('身體')}>
-              <rect className="hit" x="110" y="236" width="140" height="160"/>
-              <g className={`part ${selectedBodyPart === '身體' ? 'selected' : ''}`}>
-                <rect x="110" y="236" width="140" height="160" rx="16" fill="var(--top)"/>
-              </g>
-            </g>
-
-            {/* 左臂 */}
-            <g onClick={() => handlePartClick('左臂')}>
-              <rect className="hit" x="44" y="256" width="70" height="214"/>
-              <g className={`part ${selectedBodyPart === '左臂' ? 'selected' : ''}`}>
-                <rect x="66" y="256" width="28" height="204" rx="14" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 右臂 */}
-            <g onClick={() => handlePartClick('右臂')}>
-              <rect className="hit" x="246" y="256" width="70" height="214"/>
-              <g className={`part ${selectedBodyPart === '右臂' ? 'selected' : ''}`}>
-                <rect x="266" y="256" width="28" height="204" rx="14" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 腰部/骨盆 */}
-            <g onClick={() => handlePartClick('腰部')}>
-              <rect className="hit" x="120" y="396" width="120" height="72"/>
-              <g className={`part ${selectedBodyPart === '腰部' ? 'selected' : ''}`}>
-                <rect x="120" y="396" width="120" height="72" rx="14" fill="var(--bottom)"/>
-              </g>
-            </g>
-
-            {/* 左腿 */}
-            <g onClick={() => handlePartClick('左腿')}>
-              <rect className="hit" x="130" y="468" width="40" height="150"/>
-              <g className={`part ${selectedBodyPart === '左腿' ? 'selected' : ''}`}>
-                <rect x="130" y="468" width="40" height="150" rx="18" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 右腿 */}
-            <g onClick={() => handlePartClick('右腿')}>
-              <rect className="hit" x="190" y="468" width="40" height="150"/>
-              <g className={`part ${selectedBodyPart === '右腿' ? 'selected' : ''}`}>
-                <rect x="190" y="468" width="40" height="150" rx="18" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 左腳 */}
-            <g onClick={() => handlePartClick('左腳')}>
-              <rect className="hit" x="126" y="618" width="48" height="34"/>
-              <g className={`part ${selectedBodyPart === '左腳' ? 'selected' : ''}`}>
-                <rect x="126" y="618" width="48" height="28" rx="10" fill="var(--skin)"/>
-              </g>
-            </g>
-
-            {/* 右腳 */}
-            <g onClick={() => handlePartClick('右腳')}>
-              <rect className="hit" x="186" y="618" width="48" height="34"/>
-              <g className={`part ${selectedBodyPart === '右腳' ? 'selected' : ''}`}>
-                <rect x="186" y="618" width="48" height="28" rx="10" fill="var(--skin)"/>
-              </g>
-            </g>
-          </g>
-        </svg>
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+      {/* 性別選擇 */}
+      <Box sx={{ mb: 3, width: '100%', display: 'flex', justifyContent: 'center' }}>
+        <ToggleButtonGroup
+          value={gender}
+          exclusive
+          onChange={handleGenderChange}
+          aria-label="性別選擇"
+          sx={{
+            '& .MuiToggleButton-root': {
+              px: 4,
+              py: 1.5,
+              fontSize: '16px',
+              fontWeight: 500,
+            },
+          }}
+        >
+          <ToggleButton value="male" aria-label="男性">
+            <Male sx={{ mr: 1 }} />
+            男性
+          </ToggleButton>
+          <ToggleButton value="female" aria-label="女性">
+            <Female sx={{ mr: 1 }} />
+            女性
+          </ToggleButton>
+        </ToggleButtonGroup>
       </Box>
 
-      <Typography 
-        variant="body2" 
-        color="text.secondary" 
+      <Typography
+        variant="subtitle1"
         textAlign="center"
-        sx={{ mt: 2, maxWidth: '300px' }}
+        color="text.secondary"
+        sx={{ mb: 3, fontWeight: 500 }}
       >
-        點擊身體部位以選擇受傷位置，選中的部位會有藍色陰影顯示
+        點擊圖片上的器官名稱選擇受傷部位
+      </Typography>
+
+      {/* 人體圖片容器 */}
+      <Paper
+        elevation={3}
+        sx={{
+          width: '100%',
+          maxWidth: '700px',
+          p: 3,
+          backgroundColor: '#f8f9fa',
+          position: 'relative',
+        }}
+      >
+        <Box
+          sx={{
+            position: 'relative',
+            width: '100%',
+            maxWidth: '600px',
+            margin: '0 auto',
+          }}
+        >
+          {/* 人體圖片 */}
+          <Box
+            component="img"
+            src={gender === 'male' ? '/男_new.png' : '/女_new.png'}
+            alt={gender === 'male' ? '男性人體圖' : '女性人體圖'}
+            sx={{
+              width: '100%',
+              height: 'auto',
+              display: 'block',
+            }}
+          />
+
+          {/* 可點擊的透明區域 */}
+          {bodyParts.map((part) => {
+            const isSelected = selectedBodyPart === part.name;
+            return (
+              <Box
+                key={part.name}
+                onClick={() => handleBodyPartClick(part.name)}
+                sx={{
+                  position: 'absolute',
+                  left: `${part.x}%`,
+                  top: `${part.y}%`,
+                  transform: 'translate(-50%, -50%)',
+                  cursor: 'pointer',
+                  padding: '8px 14px',
+                  minWidth: `${part.width}px`,
+                  height: '32px',
+                  
+                  // 完全透明，無任何背景
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  
+                  transition: 'transform 0.15s ease',
+                  
+                  // hover 時也保持透明，只有輕微放大效果
+                  '&:hover': {
+                    transform: 'translate(-50%, -50%) scale(1.05)',
+                  },
+                }}
+              />
+            );
+          })}
+        </Box>
+
+        {/* 已選擇提示 */}
+        {selectedBodyPart && (
+          <Box sx={{ mt: 3, textAlign: 'center' }}>
+            <Chip
+              label={`已選擇：${selectedBodyPart}`}
+              color="primary"
+              size="medium"
+              sx={{
+                fontSize: '15px',
+                fontWeight: 600,
+                px: 2,
+                py: 2.5,
+              }}
+              onDelete={() => onBodyPartClick('')}
+            />
+          </Box>
+        )}
+      </Paper>
+
+      {/* 說明文字 */}
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        textAlign="center"
+        sx={{ mt: 2, maxWidth: '500px' }}
+      >
+        💡 提示：點擊圖片上的器官名稱即可選擇受傷部位
       </Typography>
     </Box>
   );

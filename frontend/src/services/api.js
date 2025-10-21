@@ -59,8 +59,8 @@ export const disabilityAPI = {
   getDisabilityLevels: () =>
     api.get('/disability/levels'),
   
-  getDisabilityBenefit: (level, injuryType = null) =>
-    api.post('/disability/benefit', { level, injury_type: injuryType }),
+  getDisabilityBenefit: (level, injuryType = '普通傷病') =>
+    api.post('/disability/benefit', { level: parseInt(level), injury_type: injuryType }),
   
   analyzeBodyPartInjury: (bodyPart, injuryDescription) =>
     api.post('/disability/body-part', { body_part: bodyPart, injury_description: injuryDescription }),
